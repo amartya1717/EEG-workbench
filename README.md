@@ -2,6 +2,12 @@
 
 A modular, research-grade EEG analysis tool built with PySide6 and MNE-Python. Designed for neuroscience researchers, students, and developers who need a flexible desktop GUI for EEG preprocessing, visualization, and analysis — without writing a pipeline from scratch.
 
+![Preprocessing & ICA](EEG1.png)
+![Band Power & PSD](EEG2.png)
+![Raw Visualization](EEG3.png)
+![Epoch Analysis](EEG4.png)
+![Hypothesis Reporting](EEG5.png)
+
 ---
 
 ## Features
