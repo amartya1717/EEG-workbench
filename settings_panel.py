@@ -1,16 +1,23 @@
 """
-Settings Panel
---------------
-A Toplevel window that exposes all ConfigManager values as editable fields.
+Settings Panel (PySide6)
+------------------------
+A QDialog that exposes all ConfigManager values as editable fields.
 Organised into labelled sections matching the config structure.
 
-Usage (from analysis_frame):
+Usage:
     from settings_panel import SettingsPanel
-    SettingsPanel(parent, on_save_callback=self._refresh_interpretation)
+    dlg = SettingsPanel(parent, on_save_callback=self._refresh_interpretation)
+    dlg.exec()
 """
 
-import tkinter as tk
-from tkinter import ttk, messagebox
+from PySide6.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QLabel, QLineEdit, QPushButton, QScrollArea,
+    QWidget, QFrame, QMessageBox, QSizePolicy
+)
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont
+
 from config import config, DEFAULTS
 
 
@@ -57,68 +64,56 @@ PIPELINE_FIELDS = [
 ]
 
 
-class SettingsPanel(tk.Toplevel):
+class SettingsPanel(QDialog):
 
-    def __init__(self, parent, on_save_callback=None):
+    def __init__(self, parent=None, on_save_callback=None):
         super().__init__(parent)
-        self.title("Settings")
-        self.geometry("620x680")
-        self.resizable(True, True)
+        self.setWindowTitle("Settings")
+        self.resize(620, 680)
+        self.setMinimumSize(400, 400)
         self.on_save_callback = on_save_callback
 
-        self._entries = {}   # (section, key) -> tk.StringVar
+        self._entries = {}   # (section, key) -> QLineEdit
 
         self._build_ui()
         self._load_values()
-
-        self.grab_set()  # modal
 
     # -----------------------------------------------------------------------
     # UI construction
     # -----------------------------------------------------------------------
 
     def _build_ui(self):
-        # Header
-        tk.Label(
-            self, text="Settings",
-            font=("Arial", 13, "bold")
-        ).pack(pady=(12, 4))
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(14, 14, 14, 14)
+        main_layout.setSpacing(6)
 
-        tk.Label(
-            self,
-            text="Changes take effect immediately after saving.\n"
-                 "Settings are persisted to eeg_config.json next to this tool.",
-            font=("Arial", 9), fg="#555"
-        ).pack(pady=(0, 8))
+        # Header
+        title_label = QLabel("Settings")
+        title_font = QFont("Arial", 13)
+        title_font.setBold(True)
+        title_label.setFont(title_font)
+        title_label.setAlignment(Qt.AlignCenter)
+        main_layout.addWidget(title_label)
+
+        info_label = QLabel(
+            "Changes take effect immediately after saving.\n"
+            "Settings are persisted to eeg_config.json next to this tool."
+        )
+        info_font = QFont("Arial", 9)
+        info_label.setFont(info_font)
+        info_label.setStyleSheet("color: #555;")
+        info_label.setAlignment(Qt.AlignCenter)
+        main_layout.addWidget(info_label)
 
         # Scrollable main area
-        container = tk.Frame(self)
-        container.pack(fill="both", expand=True, padx=14)
-
-        canvas = tk.Canvas(container, highlightthickness=0)
-        scrollbar = tk.Scrollbar(container, orient="vertical", command=canvas.yview)
-        self._scroll_frame = tk.Frame(canvas)
-
-        self._scroll_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-
-        canvas.create_window((0, 0), window=self._scroll_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-
-        def _on_mousewheel(e):
-            try:
-                canvas.yview_scroll(-1 * (e.delta // 120), "units")
-            except tk.TclError:
-                pass
-
-        canvas.bind("<Enter>", lambda e: canvas.bind_all("<MouseWheel>", _on_mousewheel))
-        canvas.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
-        self._canvas = canvas
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_widget = QWidget()
+        self._scroll_layout = QVBoxLayout(scroll_widget)
+        self._scroll_layout.setSpacing(4)
+        self._scroll_layout.setContentsMargins(4, 4, 4, 4)
+        scroll_area.setWidget(scroll_widget)
+        main_layout.addWidget(scroll_area, stretch=1)
 
         # Build sections
         self._build_section("Quality Thresholds",
@@ -134,91 +129,99 @@ class SettingsPanel(tk.Toplevel):
                             PIPELINE_FIELDS,
                             "Default values pre-filled in the preprocessing pipeline.")
 
+        self._scroll_layout.addStretch()
+
         # Button row
-        btn_frame = tk.Frame(self)
-        btn_frame.pack(fill="x", padx=14, pady=10)
+        btn_layout = QHBoxLayout()
+        btn_layout.setContentsMargins(0, 6, 0, 0)
 
-        tk.Button(
-            btn_frame, text="Save", width=14, bg="#2e7d32", fg="white",
-            font=("Arial", 10, "bold"),
-            command=self._save
-        ).pack(side="left", padx=4)
+        save_btn = QPushButton("Save")
+        save_btn.setFixedWidth(120)
+        save_btn.setStyleSheet(
+            "QPushButton { background-color: #2e7d32; color: white; "
+            "font-weight: bold; font-size: 10pt; padding: 5px; border-radius: 3px; }"
+            "QPushButton:hover { background-color: #388e3c; }"
+        )
+        save_btn.clicked.connect(self._save)
+        btn_layout.addWidget(save_btn)
 
-        tk.Button(
-            btn_frame, text="Reset to Defaults", width=16,
-            command=self._reset
-        ).pack(side="left", padx=4)
+        reset_btn = QPushButton("Reset to Defaults")
+        reset_btn.setFixedWidth(140)
+        reset_btn.clicked.connect(self._reset)
+        btn_layout.addWidget(reset_btn)
 
-        tk.Button(
-            btn_frame, text="Cancel", width=10,
-            command=self._on_close
-        ).pack(side="right", padx=4)
+        btn_layout.addStretch()
 
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setFixedWidth(90)
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(cancel_btn)
 
-    def _on_close(self):
-        try:
-            self._canvas.unbind_all("<MouseWheel>")
-        except Exception:
-            pass
-        self.destroy()
+        main_layout.addLayout(btn_layout)
 
     def _build_section(self, title, fields, description):
-        f = self._scroll_frame
+        layout = self._scroll_layout
 
         # Section header
-        tk.Label(
-            f, text=title,
-            font=("Arial", 10, "bold"), anchor="w"
-        ).pack(fill="x", pady=(14, 0))
+        title_lbl = QLabel(title)
+        title_font = QFont("Arial", 10)
+        title_font.setBold(True)
+        title_lbl.setFont(title_font)
+        layout.addWidget(title_lbl)
 
-        tk.Label(
-            f, text=description,
-            font=("Arial", 8), fg="#666", anchor="w"
-        ).pack(fill="x", pady=(0, 4))
+        desc_lbl = QLabel(description)
+        desc_lbl.setFont(QFont("Arial", 8))
+        desc_lbl.setStyleSheet("color: #666;")
+        layout.addWidget(desc_lbl)
 
-        ttk.Separator(f, orient="horizontal").pack(fill="x", pady=2)
+        # Separator line
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        layout.addWidget(sep)
 
         # Field grid
-        grid = tk.Frame(f)
-        grid.pack(fill="x", pady=4)
+        grid_widget = QWidget()
+        grid = QGridLayout(grid_widget)
+        grid.setContentsMargins(6, 2, 6, 2)
+        grid.setSpacing(4)
 
         for row_idx, (section, key, label, unit, ftype) in enumerate(fields):
-            tk.Label(
-                grid, text=label, anchor="w",
-                font=("Arial", 9)
-            ).grid(row=row_idx, column=0, sticky="w", padx=6, pady=3)
+            lbl = QLabel(label)
+            lbl.setFont(QFont("Arial", 9))
+            grid.addWidget(lbl, row_idx, 0, Qt.AlignLeft)
 
-            var = tk.StringVar()
-            entry = tk.Entry(grid, textvariable=var, width=12, font=("Arial", 9))
-            entry.grid(row=row_idx, column=1, padx=6, pady=3)
+            entry = QLineEdit()
+            entry.setFixedWidth(110)
+            entry.setFont(QFont("Arial", 9))
+            grid.addWidget(entry, row_idx, 1)
 
             if unit:
-                tk.Label(
-                    grid, text=unit, fg="#888",
-                    font=("Arial", 8)
-                ).grid(row=row_idx, column=2, sticky="w", padx=2)
+                unit_lbl = QLabel(unit)
+                unit_lbl.setFont(QFont("Arial", 8))
+                unit_lbl.setStyleSheet("color: #888;")
+                grid.addWidget(unit_lbl, row_idx, 2, Qt.AlignLeft)
 
-            self._entries[(section, key)] = var
+            self._entries[(section, key)] = entry
+
+        layout.addWidget(grid_widget)
 
     # -----------------------------------------------------------------------
     # Load / save / reset
     # -----------------------------------------------------------------------
 
     def _load_values(self):
-        for (section, key), var in self._entries.items():
+        for (section, key), entry in self._entries.items():
             val = config.get(section, key)
             if val is None:
                 val = DEFAULTS.get(section, {}).get(key, "")
-            var.set(str(val))
+            entry.setText(str(val))
 
     def _save(self):
         errors = []
 
-        for (section, key), var in self._entries.items():
-            raw = var.get().strip()
-
-            # Find expected type
+        for (section, key), entry in self._entries.items():
+            raw = entry.text().strip()
             ftype = self._get_ftype(section, key)
 
             try:
@@ -237,30 +240,36 @@ class SettingsPanel(tk.Toplevel):
             config.set(section, key, value)
 
         if errors:
-            messagebox.showerror(
+            QMessageBox.critical(
+                self,
                 "Validation errors",
                 "The following fields have invalid values:\n\n" + "\n".join(errors)
             )
             return
 
         config.save()
-        messagebox.showinfo("Saved", "Settings saved to eeg_config.json.")
+        QMessageBox.information(self, "Saved", "Settings saved to eeg_config.json.")
 
         if self.on_save_callback:
             self.on_save_callback()
 
-        self.destroy()
+        self.accept()
 
     def _reset(self):
-        if not messagebox.askyesno(
+        reply = QMessageBox.question(
+            self,
             "Reset to defaults",
-            "This will reset all settings to factory defaults.\nContinue?"
-        ):
+            "This will reset all settings to factory defaults.\nContinue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
             return
 
         config.reset_to_defaults()
         self._load_values()
-        messagebox.showinfo("Reset", "All settings reset to defaults.\nPress Save to persist.")
+        QMessageBox.information(
+            self, "Reset", "All settings reset to defaults.\nPress Save to persist."
+        )
 
     # -----------------------------------------------------------------------
     # Helpers

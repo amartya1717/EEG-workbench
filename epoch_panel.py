@@ -1,37 +1,41 @@
 """
-Epoch Panel
------------
-GUI tab for epoch analysis. Sits inside the main notebook in EEG_analysis_tool.py.
+Epoch Panel (PySide6)
+---------------------
+GUI tab for epoch analysis. Sits inside the main QTabWidget in analysis_widget.py.
 
 Layout:
-    Left column  — controls (events, epoch params, condition selector)
+    Left column  — controls (events, epoch params, condition selector) in QScrollArea
     Right column — plot area
-
-Flow:
-    1. Load Events     → shows event table
-    2. Select events + set window/baseline/threshold → Create Epochs
-    3. Browse trials / plot ERP / compare conditions / view trial grid
 """
 
-import tkinter as tk
-from tkinter import ttk, messagebox
 import numpy as np
 from matplotlib.figure import Figure
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+
+from PySide6.QtWidgets import (
+    QWidget, QHBoxLayout, QVBoxLayout, QScrollArea,
+    QLabel, QPushButton, QLineEdit, QCheckBox, QComboBox,
+    QTreeWidget, QTreeWidgetItem, QFrame, QMessageBox,
+    QSizePolicy
+)
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont
 
 from epoch_analyzer import EpochAnalyzer
 from visualisation import plot_manager
 
 
-class EpochPanel(tk.Frame):
+class EpochPanel(QWidget):
 
-    def __init__(self, parent):
-        super().__init__(parent, bg="white")
-
-        self.analyzer  = None
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.analyzer = None
         self.visualize = plot_manager()
         self._canvas_widget = None
-        self.on_epochs_created = None   # callback — set from analysis_frame
+        self.on_epochs_created = None   # callback — set from analysis_widget
+
+        self._current_trial = 0
+        self._condition_vars = {}   # label -> QCheckBox
 
         self._build_ui()
 
@@ -40,181 +44,189 @@ class EpochPanel(tk.Frame):
     # -----------------------------------------------------------------------
 
     def _build_ui(self):
-        # Two-column layout
-        left_container = tk.Frame(self, bg="white", width=310)
-        left_container.pack(side="left", fill="y", padx=0, pady=8)
-        left_container.pack_propagate(False)
+        main_layout = QHBoxLayout(self)
+        main_layout.setContentsMargins(0, 8, 8, 8)
+        main_layout.setSpacing(0)
 
-        # Scrollable left column
-        left_canvas = tk.Canvas(left_container, bg="white",
-                                highlightthickness=0, width=295)
-        left_scrollbar = tk.Scrollbar(left_container, orient="vertical",
-                                      command=left_canvas.yview)
-        left = tk.Frame(left_canvas, bg="white")
+        # ── Scrollable left column ──────────────────────────────────────────
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFixedWidth(320)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-        left.bind(
-            "<Configure>",
-            lambda e: left_canvas.configure(
-                scrollregion=left_canvas.bbox("all")
-            )
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(6, 4, 6, 4)
+        left_layout.setSpacing(4)
+        scroll_area.setWidget(left_widget)
+        main_layout.addWidget(scroll_area)
+
+        # ── Right plot area ─────────────────────────────────────────────────
+        right_widget = QWidget()
+        right_widget.setStyleSheet("background: white;")
+        self._plot_layout = QVBoxLayout(right_widget)
+        self._plot_layout.setContentsMargins(4, 4, 4, 4)
+        self._plot_frame = right_widget
+        main_layout.addWidget(right_widget, stretch=1)
+
+        # ── Section 1: Load events ──────────────────────────────────────────
+        self._section_label(left_layout, "1. Events")
+
+        self._load_btn = QPushButton("Load Events from Recording")
+        self._load_btn.clicked.connect(self._load_events)
+        left_layout.addWidget(self._load_btn)
+
+        # Event table (QTreeWidget as two-column list)
+        self._event_table = QTreeWidget()
+        self._event_table.setHeaderLabels(["Condition", "Trials"])
+        self._event_table.setColumnWidth(0, 180)
+        self._event_table.setColumnWidth(1, 70)
+        self._event_table.setMaximumHeight(130)
+        self._event_table.setRootIsDecorated(False)
+        left_layout.addWidget(self._event_table)
+
+        self._add_separator(left_layout)
+
+        # ── Section 2: Epoch parameters ────────────────────────────────────
+        self._section_label(left_layout, "2. Epoch Parameters")
+
+        cond_lbl = QLabel("Select conditions:")
+        cond_lbl.setFont(QFont("Arial", 9))
+        left_layout.addWidget(cond_lbl)
+
+        self._condition_frame = QWidget()
+        self._condition_frame_layout = QVBoxLayout(self._condition_frame)
+        self._condition_frame_layout.setContentsMargins(0, 0, 0, 0)
+        self._condition_frame_layout.setSpacing(2)
+        left_layout.addWidget(self._condition_frame)
+
+        # Epoch param fields
+        params_widget = QWidget()
+        params_layout = QVBoxLayout(params_widget)
+        params_layout.setContentsMargins(0, 2, 0, 2)
+        params_layout.setSpacing(3)
+
+        self._tmin_edit       = self._param_row(params_layout, "Epoch start (s):",       "-0.2")
+        self._tmax_edit       = self._param_row(params_layout, "Epoch end (s):",          "0.8")
+        self._baseline_start_edit = self._param_row(params_layout, "Baseline start (s):", "-0.2")
+        self._baseline_end_edit   = self._param_row(params_layout, "Baseline end (s):",   "0.0")
+        self._reject_edit     = self._param_row(params_layout, "Reject threshold (µV):", "100")
+
+        left_layout.addWidget(params_widget)
+
+        create_btn = QPushButton("Create Epochs")
+        create_btn.setStyleSheet(
+            "QPushButton { background-color: #1565c0; color: white; "
+            "font-weight: bold; padding: 5px; border-radius: 3px; }"
+            "QPushButton:hover { background-color: #1976d2; }"
         )
+        create_btn.clicked.connect(self._create_epochs)
+        left_layout.addWidget(create_btn)
 
-        left_canvas.create_window((0, 0), window=left, anchor="nw")
-        left_canvas.configure(yscrollcommand=left_scrollbar.set)
+        self._status_label = QLabel("No epochs created.")
+        self._status_label.setFont(QFont("Arial", 9))
+        self._status_label.setStyleSheet("color: #555;")
+        self._status_label.setWordWrap(True)
+        left_layout.addWidget(self._status_label)
 
-        left_scrollbar.pack(side="right", fill="y")
-        left_canvas.pack(side="left", fill="both", expand=True)
+        self._add_separator(left_layout)
 
-        # Mousewheel scroll — scoped to when mouse is over the left panel
-        def _mw(e):
-            try:
-                left_canvas.yview_scroll(-1 * (e.delta // 120), "units")
-            except tk.TclError:
-                pass
+        # ── Section 3: Analysis ─────────────────────────────────────────────
+        self._section_label(left_layout, "3. Analysis")
 
-        left_canvas.bind("<Enter>", lambda e: left_canvas.bind_all("<MouseWheel>", _mw))
-        left_canvas.bind("<Leave>", lambda e: left_canvas.unbind_all("<MouseWheel>"))
+        lbl_a = QLabel("Condition A:")
+        lbl_a.setFont(QFont("Arial", 9))
+        left_layout.addWidget(lbl_a)
+        self._cond_a_combo = QComboBox()
+        self._cond_a_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        left_layout.addWidget(self._cond_a_combo)
 
-        right = tk.Frame(self, bg="white")
-        right.pack(side="right", fill="both", expand=True, padx=8, pady=8)
+        lbl_b = QLabel("Condition B (for comparison):")
+        lbl_b.setFont(QFont("Arial", 9))
+        left_layout.addWidget(lbl_b)
+        self._cond_b_combo = QComboBox()
+        self._cond_b_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        left_layout.addWidget(self._cond_b_combo)
 
-        self._plot_frame = right
+        lbl_ch = QLabel("Channel (for trial grid):")
+        lbl_ch.setFont(QFont("Arial", 9))
+        left_layout.addWidget(lbl_ch)
+        self._channel_combo = QComboBox()
+        self._channel_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        left_layout.addWidget(self._channel_combo)
 
-        # ---- Section 1: Load events ----
-        self._section_label(left, "1. Events")
-
-        self._load_btn = tk.Button(
-            left, text="Load Events from Recording",
-            command=self._load_events, width=28
-        )
-        self._load_btn.pack(pady=4, padx=6)
-
-        # Event table
-        tbl_frame = tk.Frame(left)
-        tbl_frame.pack(fill="x", pady=4)
-
-        self._event_table = ttk.Treeview(
-            tbl_frame,
-            columns=("condition", "trials"),
-            show="headings", height=5
-        )
-        self._event_table.heading("condition", text="Condition")
-        self._event_table.heading("trials",    text="Trials")
-        self._event_table.column("condition",  width=160)
-        self._event_table.column("trials",     width=60, anchor="center")
-        self._event_table.pack(fill="x")
-
-        ttk.Separator(left, orient="horizontal").pack(fill="x", pady=8)
-
-        # ---- Section 2: Epoch parameters ----
-        self._section_label(left, "2. Epoch Parameters")
-
-        # Condition checkboxes — populated dynamically after events load
-        tk.Label(left, text="Select conditions:", bg="white",
-                 font=("Arial", 9)).pack(anchor="w")
-        self._condition_frame = tk.Frame(left, bg="white")
-        self._condition_frame.pack(fill="x", pady=2)
-        self._condition_vars = {}   # label → BooleanVar
-
-        # Window
-        params_grid = tk.Frame(left, bg="white")
-        params_grid.pack(fill="x", pady=4)
-
-        def _row(label, default, row):
-            tk.Label(params_grid, text=label, bg="white",
-                     font=("Arial", 9), anchor="w").grid(
-                row=row, column=0, sticky="w", pady=2)
-            var = tk.StringVar(value=default)
-            tk.Entry(params_grid, textvariable=var, width=10).grid(
-                row=row, column=1, padx=6, pady=2)
-            return var
-
-        self._tmin_var      = _row("Epoch start (s):",          "-0.2", 0)
-        self._tmax_var      = _row("Epoch end (s):",             "0.8",  1)
-        self._baseline_start = _row("Baseline start (s):",      "-0.2", 2)
-        self._baseline_end   = _row("Baseline end (s):",         "0.0",  3)
-        self._reject_var    = _row("Reject threshold (µV):",    "100",  4)
-
-        tk.Button(
-            left, text="Create Epochs", width=28,
-            bg="#1565c0", fg="white", font=("Arial", 9, "bold"),
-            command=self._create_epochs
-        ).pack(pady=6)
-
-        # Epoch status
-        self._status_label = tk.Label(
-            left, text="No epochs created.", bg="white",
-            font=("Arial", 9), fg="#555"
-        )
-        self._status_label.pack()
-
-        ttk.Separator(left, orient="horizontal").pack(fill="x", pady=8)
-
-        # ---- Section 3: Analysis ----
-        self._section_label(left, "3. Analysis")
-
-        # Single condition selector
-        tk.Label(left, text="Condition A:", bg="white",
-                 font=("Arial", 9)).pack(anchor="w")
-        self._cond_a_var = tk.StringVar()
-        self._cond_a_combo = ttk.Combobox(
-            left, textvariable=self._cond_a_var, state="readonly", width=26)
-        self._cond_a_combo.pack(anchor="w", pady=2)
-
-        tk.Label(left, text="Condition B (for comparison):", bg="white",
-                 font=("Arial", 9)).pack(anchor="w", pady=(6, 0))
-        self._cond_b_var = tk.StringVar()
-        self._cond_b_combo = ttk.Combobox(
-            left, textvariable=self._cond_b_var, state="readonly", width=26)
-        self._cond_b_combo.pack(anchor="w", pady=2)
-
-        # Channel selector
-        tk.Label(left, text="Channel (for trial grid):", bg="white",
-                 font=("Arial", 9)).pack(anchor="w", pady=(6, 0))
-        self._channel_var = tk.StringVar()
-        self._channel_combo = ttk.Combobox(
-            left, textvariable=self._channel_var, state="readonly", width=26)
-        self._channel_combo.pack(anchor="w", pady=2)
-
-        # Plot buttons
-        btn_cfg = [
-            ("Plot ERP (A)",             self._plot_erp),
-            ("Plot ERP Comparison",      self._plot_erp_comparison),
-            ("Trial Grid (A)",           self._plot_trial_grid),
-            ("Band Power Comparison",    self._plot_band_power),
+        btn_configs = [
+            ("Plot ERP (A)",          self._plot_erp),
+            ("Plot ERP Comparison",   self._plot_erp_comparison),
+            ("Trial Grid (A)",        self._plot_trial_grid),
+            ("Band Power Comparison", self._plot_band_power),
         ]
-        for label, cmd in btn_cfg:
-            tk.Button(left, text=label, width=28, command=cmd).pack(pady=2)
+        for label, cmd in btn_configs:
+            btn = QPushButton(label)
+            btn.clicked.connect(cmd)
+            left_layout.addWidget(btn)
 
-        ttk.Separator(left, orient="horizontal").pack(fill="x", pady=8)
+        self._add_separator(left_layout)
 
-        # ---- Section 4: Trial browser ----
-        self._section_label(left, "4. Trial Browser")
+        # ── Section 4: Trial browser ────────────────────────────────────────
+        self._section_label(left_layout, "4. Trial Browser")
 
-        nav_frame = tk.Frame(left, bg="white")
-        nav_frame.pack()
+        nav_widget = QWidget()
+        nav_layout = QHBoxLayout(nav_widget)
+        nav_layout.setContentsMargins(0, 0, 0, 0)
 
-        tk.Button(nav_frame, text="◀ Prev", command=self._prev_trial).pack(side="left", padx=4)
-        self._trial_label = tk.Label(nav_frame, text="Trial —/—", bg="white", font=("Arial", 9))
-        self._trial_label.pack(side="left", padx=6)
-        tk.Button(nav_frame, text="Next ▶", command=self._next_trial).pack(side="left", padx=4)
+        prev_btn = QPushButton("◀ Prev")
+        prev_btn.clicked.connect(self._prev_trial)
+        nav_layout.addWidget(prev_btn)
 
-        self._trial_info = tk.Label(
-            left, text="", bg="white", font=("Arial", 9), fg="#555",
-            wraplength=270, justify="left"
-        )
-        self._trial_info.pack(pady=4)
+        self._trial_label = QLabel("Trial —/—")
+        self._trial_label.setFont(QFont("Arial", 9))
+        nav_layout.addWidget(self._trial_label)
 
-        self._current_trial = 0
+        next_btn = QPushButton("Next ▶")
+        next_btn.clicked.connect(self._next_trial)
+        nav_layout.addWidget(next_btn)
 
-    def _section_label(self, parent, text):
-        tk.Label(
-            parent, text=text, bg="white",
-            font=("Arial", 10, "bold"), anchor="w"
-        ).pack(fill="x", pady=(8, 2), padx=6)
+        left_layout.addWidget(nav_widget)
+
+        self._trial_info = QLabel("")
+        self._trial_info.setFont(QFont("Arial", 9))
+        self._trial_info.setStyleSheet("color: #555;")
+        self._trial_info.setWordWrap(True)
+        left_layout.addWidget(self._trial_info)
+
+        left_layout.addStretch()
+
+    def _section_label(self, layout, text):
+        lbl = QLabel(text)
+        font = QFont("Arial", 10)
+        font.setBold(True)
+        lbl.setFont(font)
+        layout.addWidget(lbl)
+
+    def _add_separator(self, layout):
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        layout.addWidget(sep)
+
+    def _param_row(self, layout, label_text, default):
+        row_widget = QWidget()
+        row_layout = QHBoxLayout(row_widget)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        lbl = QLabel(label_text)
+        lbl.setFont(QFont("Arial", 9))
+        lbl.setFixedWidth(170)
+        row_layout.addWidget(lbl)
+        edit = QLineEdit(default)
+        edit.setFixedWidth(80)
+        row_layout.addWidget(edit)
+        row_layout.addStretch()
+        layout.addWidget(row_widget)
+        return edit
 
     # -----------------------------------------------------------------------
-    # Public — called from analysis_frame when preprocessor is ready
+    # Public — called from analysis_widget when preprocessor is ready
     # -----------------------------------------------------------------------
 
     def set_preprocessor(self, preprocessor):
@@ -222,25 +234,21 @@ class EpochPanel(tk.Frame):
         if preprocessor is None or preprocessor.cleaned_raw is None:
             return
 
-        # Rebind analyzer to the current cleaned_raw.
-        # If epochs exist they are kept — caller is responsible for
-        # calling mark_epochs_stale() if the signal has changed.
         if self.analyzer is None:
             self.analyzer = EpochAnalyzer(preprocessor.cleaned_raw)
         else:
             self.analyzer.raw = preprocessor.cleaned_raw
 
-        # Populate channel dropdown
-        ch_names = preprocessor.cleaned_raw.ch_names
-        self._channel_combo["values"] = ch_names
+        ch_names = list(preprocessor.cleaned_raw.ch_names)
+        self._channel_combo.clear()
+        self._channel_combo.addItems(ch_names)
         if ch_names:
-            self._channel_combo.set(ch_names[0])
+            self._channel_combo.setCurrentText(ch_names[0])
 
     def mark_epochs_stale(self):
         """
         Called when ICA exclusion changes after epochs were created.
-        Clears the epoch object and shows a red warning so the researcher
-        knows they must re-create epochs before trusting any results.
+        Clears epochs and shows a red warning.
         """
         if self.analyzer is None:
             return
@@ -249,21 +257,15 @@ class EpochPanel(tk.Frame):
         self.analyzer.epochs = None
 
         if epochs_existed:
-            self._status_label.config(
-                text=(
-                    "⚠  ICA components changed — epoch results are stale.\n"
-                    "Re-create epochs before running any analysis."
-                ),
-                fg="#b71c1c"
+            self._status_label.setText(
+                "⚠  ICA components changed — epoch results are stale.\n"
+                "Re-create epochs before running any analysis."
             )
-            # Clear trial browser state
+            self._status_label.setStyleSheet("color: #b71c1c;")
             self._current_trial = 0
             self._update_trial_label()
-            self._trial_info.config(text="")
-
-            # Clear plot area
-            for widget in self._plot_frame.winfo_children():
-                widget.destroy()
+            self._trial_info.setText("")
+            self._clear_plot()
 
     # -----------------------------------------------------------------------
     # Section 1 — Load events
@@ -271,14 +273,15 @@ class EpochPanel(tk.Frame):
 
     def _load_events(self):
         if self.analyzer is None:
-            messagebox.showerror("Error", "Run preprocessing first.")
+            QMessageBox.critical(self, "Error", "Run preprocessing first.")
             return
 
         try:
             counts = self.analyzer.read_events()
 
             if not counts:
-                messagebox.showwarning(
+                QMessageBox.warning(
+                    self,
                     "No events",
                     "No events found in this recording.\n\n"
                     "This can happen if the .set file has no annotations, "
@@ -287,35 +290,39 @@ class EpochPanel(tk.Frame):
                 return
 
             # Clear and repopulate table
-            for row in self._event_table.get_children():
-                self._event_table.delete(row)
+            self._event_table.clear()
             for label, n in counts.items():
-                self._event_table.insert("", "end", values=(label, n))
+                item = QTreeWidgetItem([label, str(n)])
+                item.setTextAlignment(1, Qt.AlignmentFlag.AlignCenter)
+                self._event_table.addTopLevelItem(item)
 
             # Build condition checkboxes
-            for widget in self._condition_frame.winfo_children():
-                widget.destroy()
+            while self._condition_frame_layout.count():
+                child = self._condition_frame_layout.takeAt(0)
+                if child.widget():
+                    child.widget().deleteLater()
             self._condition_vars = {}
 
             for label in counts:
-                var = tk.BooleanVar(value=True)
-                self._condition_vars[label] = var
-                tk.Checkbutton(
-                    self._condition_frame, text=f"{label}  ({counts[label]} trials)",
-                    variable=var, bg="white", anchor="w"
-                ).pack(fill="x")
+                cb = QCheckBox(f"{label}  ({counts[label]} trials)")
+                cb.setChecked(True)
+                cb.setFont(QFont("Arial", 9))
+                self._condition_vars[label] = cb
+                self._condition_frame_layout.addWidget(cb)
 
             # Populate analysis dropdowns
             condition_list = list(counts.keys())
-            self._cond_a_combo["values"] = condition_list
-            self._cond_b_combo["values"] = condition_list
+            self._cond_a_combo.clear()
+            self._cond_b_combo.clear()
+            self._cond_a_combo.addItems(condition_list)
+            self._cond_b_combo.addItems(condition_list)
             if len(condition_list) >= 1:
-                self._cond_a_combo.set(condition_list[0])
+                self._cond_a_combo.setCurrentText(condition_list[0])
             if len(condition_list) >= 2:
-                self._cond_b_combo.set(condition_list[1])
+                self._cond_b_combo.setCurrentText(condition_list[1])
 
         except Exception as e:
-            messagebox.showerror("Event loading error", str(e))
+            QMessageBox.critical(self, "Event loading error", str(e))
 
     # -----------------------------------------------------------------------
     # Section 2 — Create epochs
@@ -323,30 +330,30 @@ class EpochPanel(tk.Frame):
 
     def _create_epochs(self):
         if self.analyzer is None:
-            messagebox.showerror("Error", "Run preprocessing first.")
+            QMessageBox.critical(self, "Error", "Run preprocessing first.")
             return
 
         if not self._condition_vars:
-            messagebox.showerror("Error", "Load events first.")
+            QMessageBox.critical(self, "Error", "Load events first.")
             return
 
-        selected = [l for l, v in self._condition_vars.items() if v.get()]
+        selected = [l for l, v in self._condition_vars.items() if v.isChecked()]
         if not selected:
-            messagebox.showerror("Error", "Select at least one condition.")
+            QMessageBox.critical(self, "Error", "Select at least one condition.")
             return
 
         try:
-            tmin      = float(self._tmin_var.get())
-            tmax      = float(self._tmax_var.get())
-            bl_start  = float(self._baseline_start.get())
-            bl_end    = float(self._baseline_end.get())
-            threshold = float(self._reject_var.get())
+            tmin      = float(self._tmin_edit.text())
+            tmax      = float(self._tmax_edit.text())
+            bl_start  = float(self._baseline_start_edit.text())
+            bl_end    = float(self._baseline_end_edit.text())
+            threshold = float(self._reject_edit.text())
         except ValueError:
-            messagebox.showerror("Error", "Invalid parameter — check epoch window values.")
+            QMessageBox.critical(self, "Error", "Invalid parameter — check epoch window values.")
             return
 
         try:
-            epochs = self.analyzer.create_epochs(
+            self.analyzer.create_epochs(
                 event_labels=selected,
                 tmin=tmin,
                 tmax=tmax,
@@ -354,24 +361,27 @@ class EpochPanel(tk.Frame):
                 reject_threshold_uv=threshold
             )
 
-            report = self.analyzer.get_epoch_report()
+            report   = self.analyzer.get_epoch_report()
             kept     = report["n_trials_kept"]
             rejected = report["n_trials_rejected"]
             total    = report["n_trials_total"]
 
-            self._status_label.config(
-                text=f"{kept}/{total} trials kept  ({rejected} rejected >  {threshold} µV)",
-                fg="#2e7d32" if rejected == 0 else "#e65100"
+            self._status_label.setText(
+                f"{kept}/{total} trials kept  ({rejected} rejected > {threshold} µV)"
             )
+            if rejected == 0:
+                self._status_label.setStyleSheet("color: #2e7d32;")
+            else:
+                self._status_label.setStyleSheet("color: #e65100;")
+
             self._current_trial = 0
             self._update_trial_label()
 
-            # Notify hypothesis panel
             if self.on_epochs_created:
                 self.on_epochs_created(self.analyzer)
 
         except Exception as e:
-            messagebox.showerror("Epoch creation error", str(e))
+            QMessageBox.critical(self, "Epoch creation error", str(e))
 
     # -----------------------------------------------------------------------
     # Section 3 — Plot buttons
@@ -381,52 +391,52 @@ class EpochPanel(tk.Frame):
         if not self._epochs_ready():
             return
         try:
-            cond = self._cond_a_var.get() or None
+            cond = self._cond_a_combo.currentText() or None
             erp  = self.analyzer.get_erp(condition=cond)
             fig  = self.visualize.plot_erp(erp)
             self._show_figure(fig)
         except Exception as e:
-            messagebox.showerror("ERP plot error", str(e))
+            QMessageBox.critical(self, "ERP plot error", str(e))
 
     def _plot_erp_comparison(self):
         if not self._epochs_ready():
             return
-        cond_a = self._cond_a_var.get()
-        cond_b = self._cond_b_var.get()
+        cond_a = self._cond_a_combo.currentText()
+        cond_b = self._cond_b_combo.currentText()
         if not cond_a or not cond_b:
-            messagebox.showerror("Error", "Select both Condition A and B.")
+            QMessageBox.critical(self, "Error", "Select both Condition A and B.")
             return
         if cond_a == cond_b:
-            messagebox.showerror("Error", "Condition A and B must be different.")
+            QMessageBox.critical(self, "Error", "Condition A and B must be different.")
             return
         try:
             comparison = self.analyzer.get_erp_comparison(cond_a, cond_b)
             fig = self.visualize.plot_erp_comparison(comparison)
             self._show_figure(fig)
         except Exception as e:
-            messagebox.showerror("ERP comparison error", str(e))
+            QMessageBox.critical(self, "ERP comparison error", str(e))
 
     def _plot_trial_grid(self):
         if not self._epochs_ready():
             return
         try:
-            ch_name = self._channel_var.get()
-            ch_names = self.analyzer.epochs.info["ch_names"]
+            ch_name  = self._channel_combo.currentText()
+            ch_names = list(self.analyzer.epochs.info["ch_names"])
             ch_idx   = ch_names.index(ch_name) if ch_name in ch_names else 0
-            cond     = self._cond_a_var.get() or None
+            cond     = self._cond_a_combo.currentText() or None
             grid     = self.analyzer.get_trial_grid(channel_index=ch_idx, condition=cond)
             fig      = self.visualize.plot_trial_grid(grid)
             self._show_figure(fig)
         except Exception as e:
-            messagebox.showerror("Trial grid error", str(e))
+            QMessageBox.critical(self, "Trial grid error", str(e))
 
     def _plot_band_power(self):
         if not self._epochs_ready():
             return
-        cond_a = self._cond_a_var.get()
-        cond_b = self._cond_b_var.get()
+        cond_a = self._cond_a_combo.currentText()
+        cond_b = self._cond_b_combo.currentText()
         if not cond_a or not cond_b:
-            messagebox.showerror("Error", "Select both Condition A and B.")
+            QMessageBox.critical(self, "Error", "Select both Condition A and B.")
             return
         try:
             bp_a = self.analyzer.get_band_power(condition=cond_a)
@@ -434,7 +444,7 @@ class EpochPanel(tk.Frame):
             fig  = self.visualize.plot_epoch_band_power(bp_a, bp_b, cond_a, cond_b)
             self._show_figure(fig)
         except Exception as e:
-            messagebox.showerror("Band power error", str(e))
+            QMessageBox.critical(self, "Band power error", str(e))
 
     # -----------------------------------------------------------------------
     # Section 4 — Trial browser
@@ -463,26 +473,25 @@ class EpochPanel(tk.Frame):
         if index >= n:
             return
 
-        ptp     = quality["ptp_per_trial_uv"][index]
-        rms     = quality["rms_per_trial_uv"][index]
-        flag    = quality["flags"][index]
-        label   = quality["trial_labels"][index]
-        times   = np.array(quality["times"])
+        ptp   = quality["ptp_per_trial_uv"][index]
+        rms   = quality["rms_per_trial_uv"][index]
+        flag  = quality["flags"][index]
+        label = quality["trial_labels"][index]
+        times = np.array(quality["times"])
 
-        # Get single trial data (all EEG channels)
-        data = self.analyzer.epochs.get_data(picks="eeg")[index]  # (n_ch, n_times)
-        mean = data.mean(axis=0) * 1e6  # average across channels, µV
+        data = self.analyzer.epochs.get_data(picks="eeg")[index]
+        mean = data.mean(axis=0) * 1e6
 
         fig = Figure(figsize=(8, 3), dpi=100)
         ax  = fig.add_subplot(111)
-        ax.plot(times * 1000, mean, linewidth=1.2,
-                color="#2e7d32" if flag == "clean" else "#b71c1c")
+        color = "#2e7d32" if flag == "clean" else "#b71c1c"
+        ax.plot(times * 1000, mean, linewidth=1.2, color=color)
         ax.axvline(0, color="black", linewidth=0.8, linestyle="--", alpha=0.5)
         ax.axhline(0, color="black", linewidth=0.4, alpha=0.3)
         ax.set_title(
             f"Trial {index + 1}/{n}  [{label}]  —  "
             f"{'✓ Clean' if flag == 'clean' else '✗ Rejected'}",
-            color="#2e7d32" if flag == "clean" else "#b71c1c"
+            color=color
         )
         ax.set_xlabel("Time (ms)")
         ax.set_ylabel("Mean amplitude (µV)")
@@ -491,19 +500,19 @@ class EpochPanel(tk.Frame):
 
         self._show_figure(fig)
         self._update_trial_label(index, n)
-        self._trial_info.config(
-            text=f"Condition: {label}\n"
-                 f"Peak-to-peak: {round(ptp, 2)} µV\n"
-                 f"RMS: {round(rms, 2)} µV\n"
-                 f"Status: {flag}"
+        self._trial_info.setText(
+            f"Condition: {label}\n"
+            f"Peak-to-peak: {round(ptp, 2)} µV\n"
+            f"RMS: {round(rms, 2)} µV\n"
+            f"Status: {flag}"
         )
 
     def _update_trial_label(self, index=0, n=None):
         if self.analyzer and self.analyzer.epochs is not None:
             n = n or len(self.analyzer.epochs)
-            self._trial_label.config(text=f"Trial {index + 1}/{n}")
+            self._trial_label.setText(f"Trial {index + 1}/{n}")
         else:
-            self._trial_label.config(text="Trial —/—")
+            self._trial_label.setText("Trial —/—")
 
     # -----------------------------------------------------------------------
     # Helpers
@@ -511,14 +520,19 @@ class EpochPanel(tk.Frame):
 
     def _epochs_ready(self) -> bool:
         if self.analyzer is None or self.analyzer.epochs is None:
-            messagebox.showerror("Error", "Create epochs first.")
+            QMessageBox.critical(self, "Error", "Create epochs first.")
             return False
         return True
 
+    def _clear_plot(self):
+        while self._plot_layout.count():
+            child = self._plot_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+
     def _show_figure(self, fig: Figure):
-        for widget in self._plot_frame.winfo_children():
-            widget.destroy()
-        canvas = FigureCanvasTkAgg(fig, master=self._plot_frame)
+        self._clear_plot()
+        canvas = FigureCanvasQTAgg(fig)
+        self._plot_layout.addWidget(canvas)
         canvas.draw()
-        canvas.get_tk_widget().pack(fill="both", expand=True)
         self._canvas_widget = canvas

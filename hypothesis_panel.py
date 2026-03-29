@@ -1,34 +1,76 @@
 """
-Hypothesis Panel
-----------------
+Hypothesis Panel (PySide6)
+--------------------------
 GUI tab for hypothesis-driven analysis.
-Sits inside the main notebook in EEG_analysis_tool.py.
+Sits inside the main QTabWidget in analysis_widget.py.
 
 Layout:
-    Left  — hypothesis input + analysis parameters
-    Right — structured report output (scrollable text with colour tags)
-
-Flow:
-    1. User types a hypothesis
-    2. Selects condition A vs B, time window, audience
-    3. Clicks Generate Report
-    4. Report renders with verdict, ERP findings, band power, limits, next steps
-    5. Methods paragraph available to copy
+    Left  — hypothesis input + analysis parameters (scrollable)
+    Right — structured report output (QTextEdit with coloured text)
 """
 
-import tkinter as tk
-from tkinter import ttk, messagebox
+from PySide6.QtWidgets import (
+    QWidget, QHBoxLayout, QVBoxLayout, QScrollArea,
+    QLabel, QPushButton, QTextEdit, QComboBox, QLineEdit,
+    QFrame, QRadioButton, QButtonGroup, QApplication,
+    QMessageBox, QSizePolicy, QGridLayout
+)
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont, QTextCursor, QTextCharFormat, QColor
 
 from hypothesis_reporter import HypothesisReporter
 
 
-class HypothesisPanel(tk.Frame):
+# ---------------------------------------------------------------------------
+# Shared coloured-text helper
+# ---------------------------------------------------------------------------
 
-    def __init__(self, parent):
-        super().__init__(parent, bg="white")
+TAG_STYLES = {
+    "good":       {"color": "#2e7d32", "bold": True,  "size": 10},
+    "medium":     {"color": "#e65100", "bold": True,  "size": 10},
+    "high":       {"color": "#b71c1c", "bold": True,  "size": 10},
+    "info":       {"color": "#1565c0", "bold": True,  "size": 10},
+    "heading":    {"bold": True, "size": 11, "underline": True},
+    "subtext":    {"color": "#555555", "size": 9},
+    "action":     {"color": "#4a148c", "italic": True, "size": 9},
+    "body":       {"size": 10},
+    "subheading": {"bold": True, "size": 10},
+    "dim":        {"color": "#666", "size": 9},
+    "bullet":     {"size": 10},
+    "methods_box": {"color": "#1a237e", "size": 9, "family": "Courier", "bg": "#e8eaf6"},
+}
 
-        self._analyzer  = None   # EpochAnalyzer — set from outside
-        self._audience  = "researcher"
+
+def _insert(widget: QTextEdit, text: str, tag: str = "body"):
+    style = TAG_STYLES.get(tag, {})
+    cursor = widget.textCursor()
+    cursor.movePosition(QTextCursor.MoveOperation.End)
+    fmt = QTextCharFormat()
+    if "color" in style:
+        fmt.setForeground(QColor(style["color"]))
+    if style.get("bold"):
+        fmt.setFontWeight(QFont.Weight.Bold)
+    if style.get("italic"):
+        fmt.setFontItalic(True)
+    if style.get("underline"):
+        fmt.setFontUnderline(True)
+    if "size" in style:
+        fmt.setFontPointSize(style["size"])
+    if "family" in style:
+        fmt.setFontFamily(style["family"])
+    if "bg" in style:
+        fmt.setBackground(QColor(style["bg"]))
+    cursor.insertText(text, fmt)
+    widget.setTextCursor(cursor)
+
+
+class HypothesisPanel(QWidget):
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._analyzer = None
+        self._audience = "researcher"
+        self._methods_text_cache = ""
 
         self._build_ui()
 
@@ -37,251 +79,220 @@ class HypothesisPanel(tk.Frame):
     # -----------------------------------------------------------------------
 
     def _build_ui(self):
-        # Two-column layout
-        left_container = tk.Frame(self, bg="white", width=320)
-        left_container.pack(side="left", fill="y", padx=0, pady=8)
-        left_container.pack_propagate(False)
+        main_layout = QHBoxLayout(self)
+        main_layout.setContentsMargins(0, 8, 8, 8)
+        main_layout.setSpacing(0)
 
-        # Scrollable left column
-        lc = tk.Canvas(left_container, bg="white", highlightthickness=0)
-        lsb = tk.Scrollbar(left_container, orient="vertical", command=lc.yview)
-        left = tk.Frame(lc, bg="white")
+        # ── Scrollable left column ──────────────────────────────────────────
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFixedWidth(330)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-        left.bind("<Configure>",
-                  lambda e: lc.configure(scrollregion=lc.bbox("all")))
+        left_widget = QWidget()
+        self._left_layout = QVBoxLayout(left_widget)
+        self._left_layout.setContentsMargins(8, 4, 8, 4)
+        self._left_layout.setSpacing(4)
+        scroll_area.setWidget(left_widget)
+        main_layout.addWidget(scroll_area)
 
-        # Keep inner frame width locked to canvas width so nothing clips right
-        lc.bind("<Configure>",
-                lambda e: lc.itemconfig(lc_window, width=e.width))
+        # ── Right report panel ──────────────────────────────────────────────
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(8, 4, 4, 4)
+        right_layout.setSpacing(4)
+        main_layout.addWidget(right_widget, stretch=1)
 
-        lc_window = lc.create_window((0, 0), window=left, anchor="nw")
-        lc.configure(yscrollcommand=lsb.set)
+        self._build_report_panel(right_layout)
 
-        lsb.pack(side="right", fill="y")
-        lc.pack(side="left", fill="both", expand=True)
-
-        def _mw(e):
-            try:
-                lc.yview_scroll(-1 * (e.delta // 120), "units")
-            except tk.TclError:
-                pass
-
-        lc.bind("<Enter>", lambda e: lc.bind_all("<MouseWheel>", _mw))
-        lc.bind("<Leave>", lambda e: lc.unbind_all("<MouseWheel>"))
-
-        # Right — report output
-        right = tk.Frame(self, bg="white")
-        right.pack(side="right", fill="both", expand=True, padx=8, pady=8)
-        self._build_report_panel(right)
-
-        # ── Left contents ──────────────────────────────────────────────────
-        pad = {"padx": 10}
+        # ── Left contents ───────────────────────────────────────────────────
+        ll = self._left_layout
 
         # Section: Hypothesis
-        self._section(left, "Your Hypothesis")
-        tk.Label(
-            left, text="State what you expect to find:",
-            bg="white", font=("Arial", 9), fg="#555", anchor="w"
-        ).pack(fill="x", **pad)
+        self._section(ll, "Your Hypothesis")
+        hint_lbl = QLabel("State what you expect to find:")
+        hint_lbl.setFont(QFont("Arial", 9))
+        hint_lbl.setStyleSheet("color: #555;")
+        ll.addWidget(hint_lbl)
 
-        self._hyp_text = tk.Text(
-            left, height=4, wrap="word",
-            font=("Arial", 10), relief="solid", bd=1
+        self._hyp_text = QTextEdit()
+        self._hyp_text.setFont(QFont("Arial", 10))
+        self._hyp_text.setFixedHeight(80)
+        self._hyp_text.setPlaceholderText(
+            "e.g. Target stimuli will produce a larger P300 than distractors"
         )
-        self._hyp_text.pack(fill="x", padx=10, pady=4)
-        self._hyp_text.insert("1.0",
-            "e.g. Target stimuli will produce a larger P300 than distractors")
-        self._sep(left)
+        ll.addWidget(self._hyp_text)
+        self._sep(ll)
 
         # Section: Conditions
-        self._section(left, "Conditions")
+        self._section(ll, "Conditions")
+        lbl_a = QLabel("Condition A (primary):")
+        lbl_a.setFont(QFont("Arial", 9))
+        ll.addWidget(lbl_a)
+        self._cond_a_combo = QComboBox()
+        self._cond_a_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        ll.addWidget(self._cond_a_combo)
 
-        tk.Label(left, text="Condition A (primary):",
-                 bg="white", font=("Arial", 9)).pack(anchor="w", **pad)
-        self._cond_a_var = tk.StringVar()
-        self._cond_a_combo = ttk.Combobox(
-            left, textvariable=self._cond_a_var,
-            state="readonly")
-        self._cond_a_combo.pack(fill="x", padx=14, pady=2)
-
-        tk.Label(left, text="Condition B (comparison):",
-                 bg="white", font=("Arial", 9)).pack(anchor="w", **pad)
-        self._cond_b_var = tk.StringVar()
-        self._cond_b_combo = ttk.Combobox(
-            left, textvariable=self._cond_b_var,
-            state="readonly")
-        self._cond_b_combo.pack(fill="x", padx=14, pady=2)
-
-        self._sep(left)
+        lbl_b = QLabel("Condition B (comparison):")
+        lbl_b.setFont(QFont("Arial", 9))
+        ll.addWidget(lbl_b)
+        self._cond_b_combo = QComboBox()
+        self._cond_b_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        ll.addWidget(self._cond_b_combo)
+        self._sep(ll)
 
         # Section: Time window
-        self._section(left, "Time Window of Interest")
-        tk.Label(
-            left,
-            text="The latency range where you expect an effect (ms):",
-            bg="white", font=("Arial", 9), fg="#555", wraplength=280
-        ).pack(anchor="w", **pad)
+        self._section(ll, "Time Window of Interest")
+        win_hint = QLabel("The latency range where you expect an effect (ms):")
+        win_hint.setFont(QFont("Arial", 9))
+        win_hint.setStyleSheet("color: #555;")
+        win_hint.setWordWrap(True)
+        ll.addWidget(win_hint)
 
-        win_frame = tk.Frame(left, bg="white")
-        win_frame.pack(anchor="w", padx=14, pady=4)
-
-        tk.Label(win_frame, text="From:", bg="white",
-                 font=("Arial", 9)).grid(row=0, column=0, padx=4)
-        self._tlo_var = tk.StringVar(value="250")
-        tk.Entry(win_frame, textvariable=self._tlo_var,
-                 width=6, font=("Arial", 9)).grid(row=0, column=1)
-        tk.Label(win_frame, text="ms    To:", bg="white",
-                 font=("Arial", 9)).grid(row=0, column=2, padx=4)
-        self._thi_var = tk.StringVar(value="500")
-        tk.Entry(win_frame, textvariable=self._thi_var,
-                 width=6, font=("Arial", 9)).grid(row=0, column=3)
-        tk.Label(win_frame, text="ms", bg="white",
-                 font=("Arial", 9)).grid(row=0, column=4, padx=2)
-
-        self._sep(left)
+        win_row = QWidget()
+        win_row_layout = QHBoxLayout(win_row)
+        win_row_layout.setContentsMargins(0, 0, 0, 0)
+        win_row_layout.addWidget(QLabel("From:"))
+        self._tlo_edit = QLineEdit("250")
+        self._tlo_edit.setFixedWidth(55)
+        win_row_layout.addWidget(self._tlo_edit)
+        win_row_layout.addWidget(QLabel("ms    To:"))
+        self._thi_edit = QLineEdit("500")
+        self._thi_edit.setFixedWidth(55)
+        win_row_layout.addWidget(self._thi_edit)
+        win_row_layout.addWidget(QLabel("ms"))
+        win_row_layout.addStretch()
+        ll.addWidget(win_row)
+        self._sep(ll)
 
         # Section: Audience
-        self._section(left, "Report Style")
-        self._audience_var = tk.StringVar(value="researcher")
-        for val, lbl in [
+        self._section(ll, "Report Style")
+        self._audience_group = QButtonGroup(self)
+        for val, lbl_text in [
             ("researcher", "Researcher"),
             ("clinician",  "Clinician"),
             ("general",    "General audience")
         ]:
-            tk.Radiobutton(
-                left, text=lbl, variable=self._audience_var,
-                value=val, bg="white", font=("Arial", 9)
-            ).pack(anchor="w", padx=14)
-
-        self._sep(left)
+            rb = QRadioButton(lbl_text)
+            rb.setFont(QFont("Arial", 9))
+            rb.setProperty("value", val)
+            if val == "researcher":
+                rb.setChecked(True)
+            self._audience_group.addButton(rb)
+            ll.addWidget(rb)
+        self._sep(ll)
 
         # Status
-        self._status = tk.Label(
-            left, text="", bg="white",
-            font=("Arial", 9), fg="#b71c1c",
-            wraplength=280, justify="left"
-        )
-        self._status.pack(fill="x", **pad)
+        self._status = QLabel("")
+        self._status.setFont(QFont("Arial", 9))
+        self._status.setStyleSheet("color: #b71c1c;")
+        self._status.setWordWrap(True)
+        ll.addWidget(self._status)
 
         # Generate button
-        tk.Button(
-            left, text="Generate Report",
-            bg="#1565c0", fg="white",
-            font=("Arial", 10, "bold"),
-            command=self._generate
-        ).pack(fill="x", pady=8, padx=10)
-
-        # Copy methods button
-        tk.Button(
-            left, text="Copy Methods Paragraph",
-            command=self._copy_methods
-        ).pack(fill="x", pady=2, padx=10)
-
-    def _build_report_panel(self, parent):
-        # Title bar
-        tk.Label(
-            parent, text="Analysis Report",
-            font=("Arial", 11, "bold"), bg="white", anchor="w"
-        ).pack(fill="x", pady=(0, 2))
-
-        ttk.Separator(parent, orient="horizontal").pack(fill="x", pady=2)
-
-        # ── Metadata disclaimer notice ─────────────────────────────────────
-        notice_frame = tk.Frame(parent, bg="#fff8e1", bd=1, relief="solid")
-        notice_frame.pack(fill="x", pady=(4, 6))
-
-        tk.Label(
-            notice_frame,
-            text="ℹ  Important — please read before interpreting results",
-            font=("Arial", 9, "bold"), bg="#fff8e1", fg="#e65100",anchor="w"
-        ).pack(fill="x", padx=8, pady=(6, 2))
-
-        tk.Label(
-            notice_frame,
-            text=(f"The hypothesis text above is used as a label only — it is metadata. "
-                "The tool does not read, parse, or interpret the words you type.\n\n"
-                "All findings, verdicts, and conclusions in this report are computed "
-                "solely from the Condition A vs Condition B selection and the time "
-                "window you specified. Two different hypothesis statements with the "
-                "same conditions and window will produce identical results.\n\n"
-                "Review all findings critically before drawing conclusions. "
-                "This report is a structured summary of descriptive statistics — "
-                "not a statistical inference or a clinical judgement.\n\nSuggested "
-                "next steps are rule-based, not hypothesis-aware. Steps such as "
-                "run statistical testing and replicate with more participants "
-                "appear on every report regardless of findings. Steps triggered by "
-                "data (time window adjustment, alpha follow-up) are based on "
-                "numerical thresholds only — not on what your hypothesis predicted. "
-                "Treat next steps as a general checklist to consider, not as a personalised research roadmap."),
-            font=("Arial", 8), bg="#fff8e1", fg="#555",
-            wraplength=1080, justify="left",anchor="w"
-        ).pack(fill="x", padx=8, pady=(0, 8))
-
-        ttk.Separator(parent, orient="horizontal").pack(fill="x", pady=2)
-
-        # Scrollable text area
-        txt_frame = tk.Frame(parent)
-        txt_frame.pack(fill="both", expand=True)
-
-        sb = tk.Scrollbar(txt_frame, orient="vertical")
-        sb.pack(side="right", fill="y")
-
-        self._report_text = tk.Text(
-            txt_frame, wrap="word",
-            yscrollcommand=sb.set,
-            font=("Arial", 10), padx=12, pady=10,
-            state="disabled", relief="flat"
+        gen_btn = QPushButton("Generate Report")
+        gen_btn.setStyleSheet(
+            "QPushButton { background-color: #1565c0; color: white; "
+            "font-weight: bold; font-size: 10pt; padding: 6px; border-radius: 3px; }"
+            "QPushButton:hover { background-color: #1976d2; }"
         )
-        self._report_text.pack(fill="both", expand=True)
-        sb.config(command=self._report_text.yview)
+        gen_btn.clicked.connect(self._generate)
+        ll.addWidget(gen_btn)
 
-        # Colour tags
-        self._report_text.tag_config(
-            "heading", font=("Arial", 11, "bold"), spacing1=8)
-        self._report_text.tag_config(
-            "subheading", font=("Arial", 10, "bold"), spacing1=6)
-        self._report_text.tag_config(
-            "good",   foreground="#2e7d32", font=("Arial", 10, "bold"))
-        self._report_text.tag_config(
-            "medium", foreground="#e65100", font=("Arial", 10, "bold"))
-        self._report_text.tag_config(
-            "high",   foreground="#b71c1c", font=("Arial", 10, "bold"))
-        self._report_text.tag_config(
-            "body",   font=("Arial", 10))
-        self._report_text.tag_config(
-            "dim",    foreground="#666", font=("Arial", 9))
-        self._report_text.tag_config(
-            "bullet", font=("Arial", 10), lmargin1=20, lmargin2=30)
-        self._report_text.tag_config(
-            "methods_box",
-            font=("Courier", 9),
-            foreground="#1a237e",
-            background="#e8eaf6",
-            lmargin1=10, lmargin2=10,
-            spacing1=4, spacing3=4
+        copy_btn = QPushButton("Copy Methods Paragraph")
+        copy_btn.clicked.connect(self._copy_methods)
+        ll.addWidget(copy_btn)
+
+        ll.addStretch()
+
+    def _build_report_panel(self, layout):
+        title_lbl = QLabel("Analysis Report")
+        title_font = QFont("Arial", 11)
+        title_font.setBold(True)
+        title_lbl.setFont(title_font)
+        layout.addWidget(title_lbl)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        layout.addWidget(sep)
+
+        # Disclaimer notice
+        notice_frame = QFrame()
+        notice_frame.setStyleSheet(
+            "QFrame { background-color: #fff8e1; border: 1px solid #ffe082; border-radius: 3px; }"
         )
+        notice_layout = QVBoxLayout(notice_frame)
+        notice_layout.setContentsMargins(8, 6, 8, 8)
 
-        self._methods_text_cache = ""
+        notice_title = QLabel("ℹ  Important — please read before interpreting results")
+        notice_title_font = QFont("Arial", 9)
+        notice_title_font.setBold(True)
+        notice_title.setFont(notice_title_font)
+        notice_title.setStyleSheet("color: #e65100; background: transparent;")
+        notice_layout.addWidget(notice_title)
+
+        notice_body = QLabel(
+            "The hypothesis text above is used as a label only — it is metadata. "
+            "The tool does not read, parse, or interpret the words you type.\n\n"
+            "All findings, verdicts, and conclusions in this report are computed "
+            "solely from the Condition A vs Condition B selection and the time "
+            "window you specified. Two different hypothesis statements with the "
+            "same conditions and window will produce identical results.\n\n"
+            "Review all findings critically before drawing conclusions. "
+            "This report is a structured summary of descriptive statistics — "
+            "not a statistical inference or a clinical judgement.\n\nSuggested "
+            "next steps are rule-based, not hypothesis-aware. Steps such as "
+            "run statistical testing and replicate with more participants "
+            "appear on every report regardless of findings. Steps triggered by "
+            "data (time window adjustment, alpha follow-up) are based on "
+            "numerical thresholds only — not on what your hypothesis predicted. "
+            "Treat next steps as a general checklist to consider, not as a personalised research roadmap."
+        )
+        notice_body.setFont(QFont("Arial", 8))
+        notice_body.setStyleSheet("color: #555; background: transparent;")
+        notice_body.setWordWrap(True)
+        notice_layout.addWidget(notice_body)
+
+        layout.addWidget(notice_frame)
+
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.Shape.HLine)
+        sep2.setFrameShadow(QFrame.Shadow.Sunken)
+        layout.addWidget(sep2)
+
+        # Report text area
+        self._report_text = QTextEdit()
+        self._report_text.setFont(QFont("Arial", 10))
+        self._report_text.setReadOnly(True)
+        layout.addWidget(self._report_text, stretch=1)
 
     # -----------------------------------------------------------------------
     # Public
     # -----------------------------------------------------------------------
 
     def set_analyzer(self, analyzer, audience: str = "researcher"):
-        """Called from analysis_frame when epochs are created."""
+        """Called from analysis_widget when epochs are created."""
         self._analyzer = analyzer
-        self._audience_var.set(audience)
+
+        # Set audience radio
+        for btn in self._audience_group.buttons():
+            if btn.property("value") == audience:
+                btn.setChecked(True)
+                break
 
         if analyzer is None or analyzer.epochs is None:
             return
 
         conditions = list(analyzer.epochs.event_id.keys())
-        self._cond_a_combo["values"] = conditions
-        self._cond_b_combo["values"] = conditions
+        self._cond_a_combo.clear()
+        self._cond_b_combo.clear()
+        self._cond_a_combo.addItems(conditions)
+        self._cond_b_combo.addItems(conditions)
         if len(conditions) >= 1:
-            self._cond_a_combo.set(conditions[0])
+            self._cond_a_combo.setCurrentText(conditions[0])
         if len(conditions) >= 2:
-            self._cond_b_combo.set(conditions[1])
+            self._cond_b_combo.setCurrentText(conditions[1])
 
     # -----------------------------------------------------------------------
     # Generate
@@ -289,45 +300,45 @@ class HypothesisPanel(tk.Frame):
 
     def _generate(self):
         if self._analyzer is None or self._analyzer.epochs is None:
-            self._status.config(
-                text="⚠  Create epochs in the Epoch Analysis tab first.")
+            self._status.setText("⚠  Create epochs in the Epoch Analysis tab first.")
             return
 
-        hyp = self._hyp_text.get("1.0", tk.END).strip()
-        if not hyp or hyp.startswith("e.g."):
-            self._status.config(text="⚠  Enter your hypothesis first.")
+        hyp = self._hyp_text.toPlainText().strip()
+        if not hyp:
+            self._status.setText("⚠  Enter your hypothesis first.")
             return
 
-        cond_a = self._cond_a_var.get()
-        cond_b = self._cond_b_var.get()
+        cond_a = self._cond_a_combo.currentText()
+        cond_b = self._cond_b_combo.currentText()
 
         if not cond_a or not cond_b:
-            self._status.config(text="⚠  Select both conditions.")
+            self._status.setText("⚠  Select both conditions.")
             return
         if cond_a == cond_b:
-            self._status.config(text="⚠  Conditions must be different.")
+            self._status.setText("⚠  Conditions must be different.")
             return
 
         try:
-            t_lo = float(self._tlo_var.get())
-            t_hi = float(self._thi_var.get())
+            t_lo = float(self._tlo_edit.text())
+            t_hi = float(self._thi_edit.text())
             if t_lo >= t_hi:
-                self._status.config(text="⚠  Time window start must be before end.")
+                self._status.setText("⚠  Time window start must be before end.")
                 return
         except ValueError:
-            self._status.config(text="⚠  Enter valid numbers for the time window.")
+            self._status.setText("⚠  Enter valid numbers for the time window.")
             return
 
-        audience = self._audience_var.get()
+        checked = self._audience_group.checkedButton()
+        audience = checked.property("value") if checked else "researcher"
 
         try:
-            erp_a        = self._analyzer.get_erp(condition=cond_a)
-            erp_b        = self._analyzer.get_erp(condition=cond_b)
-            band_power_a = self._analyzer.get_band_power(condition=cond_a)
-            band_power_b = self._analyzer.get_band_power(condition=cond_b)
+            erp_a         = self._analyzer.get_erp(condition=cond_a)
+            erp_b         = self._analyzer.get_erp(condition=cond_b)
+            band_power_a  = self._analyzer.get_band_power(condition=cond_a)
+            band_power_b  = self._analyzer.get_band_power(condition=cond_b)
             trial_quality = self._analyzer.get_trial_quality()
         except Exception as e:
-            self._status.config(text=f"Error computing results: {e}")
+            self._status.setText(f"Error computing results: {e}")
             return
 
         try:
@@ -345,10 +356,10 @@ class HypothesisPanel(tk.Frame):
             )
             result = reporter.generate()
         except Exception as e:
-            self._status.config(text=f"Report generation error: {e}")
+            self._status.setText(f"Report generation error: {e}")
             return
 
-        self._status.config(text="")
+        self._status.setText("")
         self._render_report(result)
 
     # -----------------------------------------------------------------------
@@ -357,26 +368,26 @@ class HypothesisPanel(tk.Frame):
 
     def _render_report(self, result: dict):
         t = self._report_text
-        t.config(state="normal")
-        t.delete("1.0", tk.END)
+        t.setReadOnly(False)
+        t.clear()
 
         def w(text, tag="body"):
-            t.insert(tk.END, text, tag)
+            _insert(t, text, tag)
 
         def nl(n=1):
-            t.insert(tk.END, "\n" * n)
+            _insert(t, "\n" * n, "body")
 
         ICONS = {"good": "✓", "medium": "⚠", "high": "✗", "info": "ℹ"}
 
-        # ── Header ──────────────────────────────────────────────────────────
+        # Header
         w("ANALYSIS REPORT\n", "heading")
-        w(f"Hypothesis: ", "subheading")
+        w("Hypothesis: ", "subheading")
         w(f"{result['hypothesis']}\n", "body")
         w(f"Conditions: {result['condition_a']}  vs  {result['condition_b']}\n", "dim")
         w(f"Time window: {result['time_window'][0]}–{result['time_window'][1]} ms\n", "dim")
         nl()
 
-        # ── Trial quality ────────────────────────────────────────────────────
+        # Trial quality
         tq = result["trial_summary"]
         w("DATA QUALITY\n", "subheading")
         colour = {"good": "good", "acceptable": "medium", "poor": "high"}[tq["quality"]]
@@ -385,14 +396,14 @@ class HypothesisPanel(tk.Frame):
         w(f"  {tq['note']}\n", "dim")
         nl()
 
-        # ── Verdict ──────────────────────────────────────────────────────────
+        # Verdict
         v = result["verdict"]
         w("VERDICT\n", "subheading")
         w(f"  {ICONS.get(v['colour'], '•')}  {v['verdict']}\n", v["colour"])
         w(f"\n  {v['rationale']}\n", "body")
         nl()
 
-        # ── ERP findings ──────────────────────────────────────────────────────
+        # ERP findings
         erp = result["erp_findings"]
         w("ERP FINDINGS\n", "subheading")
         w(f"  {erp['direction_text']}\n", "body")
@@ -404,7 +415,7 @@ class HypothesisPanel(tk.Frame):
                 w(f"  •  {note}\n", "bullet")
         nl()
 
-        # ── Band power ────────────────────────────────────────────────────────
+        # Band power
         band = result["band_findings"]
         if band["findings"]:
             w("FREQUENCY BAND ANALYSIS\n", "subheading")
@@ -415,27 +426,29 @@ class HypothesisPanel(tk.Frame):
                 w(f"     {f['note']}\n", "dim")
             nl()
 
-        # ── Limits ───────────────────────────────────────────────────────────
+        # Limits
         w("WHAT THE DATA CANNOT TELL YOU\n", "subheading")
         for lim in result["limits"]:
             w(f"  •  {lim}\n", "bullet")
         nl()
 
-        # ── Next steps ───────────────────────────────────────────────────────
+        # Next steps
         w("SUGGESTED NEXT STEPS\n", "subheading")
         for i, step in enumerate(result["next_steps"], 1):
             w(f"  {i}.  {step}\n", "bullet")
         nl()
 
-        # ── Methods paragraph ─────────────────────────────────────────────────
+        # Methods paragraph
         w("METHODS PARAGRAPH\n", "subheading")
         w("  (Copy this directly into your methods section)\n\n", "dim")
         methods = result["methods"]
         self._methods_text_cache = methods
         w(f"  {methods}\n", "methods_box")
 
-        t.config(state="disabled")
-        t.see("1.0")
+        t.setReadOnly(True)
+        cursor = t.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.Start)
+        t.setTextCursor(cursor)
 
     # -----------------------------------------------------------------------
     # Copy methods
@@ -443,24 +456,24 @@ class HypothesisPanel(tk.Frame):
 
     def _copy_methods(self):
         if not self._methods_text_cache:
-            messagebox.showinfo("Nothing to copy",
-                                "Generate a report first.")
+            QMessageBox.information(self, "Nothing to copy", "Generate a report first.")
             return
-        self.clipboard_clear()
-        self.clipboard_append(self._methods_text_cache)
-        messagebox.showinfo("Copied",
-                            "Methods paragraph copied to clipboard.")
+        QApplication.clipboard().setText(self._methods_text_cache)
+        QMessageBox.information(self, "Copied", "Methods paragraph copied to clipboard.")
 
     # -----------------------------------------------------------------------
     # Helpers
     # -----------------------------------------------------------------------
 
-    def _section(self, parent, text):
-        tk.Label(
-            parent, text=text, bg="white",
-            font=("Arial", 10, "bold"), anchor="w"
-        ).pack(fill="x", padx=10, pady=(10, 2))
+    def _section(self, layout, text):
+        lbl = QLabel(text)
+        font = QFont("Arial", 10)
+        font.setBold(True)
+        lbl.setFont(font)
+        layout.addWidget(lbl)
 
-    def _sep(self, parent):
-        ttk.Separator(parent, orient="horizontal").pack(
-            fill="x", padx=10, pady=6)
+    def _sep(self, layout):
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        layout.addWidget(sep)

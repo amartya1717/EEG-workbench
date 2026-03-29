@@ -1,5 +1,5 @@
 from matplotlib.figure import Figure
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+# FigureCanvasTkAgg removed (use Qt backend)
 import numpy as np
 import mne
 
@@ -7,7 +7,7 @@ import mne
 class plot_manager:
     def __init__(self):
         pass
- 
+
 
     def plot_raw_channel(self,raw = None):
 
@@ -52,20 +52,18 @@ class plot_manager:
         return fig
 
     def plot_ica_components(self,data):
-       
+
         data.plot_components()
-        
+
             # self.preprocessor.ica.plot_sources()
-       
+
 
     def plot_ica_sources(self,data,c_raw):
-      
+
         data.plot_sources(c_raw)
-     
 
-    def plot_ica_properties_from_entry(self,ica_entry,c_raw,data):
 
-        text = ica_entry.get().strip()
+    def plot_ica_properties_from_entry(self, text, c_raw, data):
 
         picks = [int(x.strip()) for x in text.split(",") if x.strip()]
 
@@ -119,7 +117,7 @@ class plot_manager:
 
         return fig
 
-        
+
 
     def plot_raw_overlay_comparision(self, raw1, raw2,label1,label2, channel_index= 0):
 
@@ -128,7 +126,7 @@ class plot_manager:
 
         if raw1.info["sfreq"] != raw2.info["sfreq"]:
             raise ValueError("Sampling rates do not match.")
-        
+
         print("raw1 id:", id(raw1))
         print("raw2 id:", id(raw2))
         print("raw1 is raw2:", raw1 is raw2)
@@ -161,15 +159,15 @@ class plot_manager:
         ax.grid(True)
 
         return fig
-        
-    
+
+
     def plot_difference_signal(self,raw1,raw2, label1,label2,channel_index=0):
         if channel_index < 0 or channel_index >= len(raw1.ch_names):
             raise ValueError("Invalid channel index.")
 
         if raw1.info["sfreq"] != raw2.info["sfreq"]:
             raise ValueError("Sampling rates do not match.")
-        
+
         print("raw1 id:", id(raw1))
         print("raw2 id:", id(raw2))
         print("raw1 is raw2:", raw1 is raw2)
@@ -202,13 +200,13 @@ class plot_manager:
         ax.grid(True)
 
         return fig
-        
+
 
     def plot_band_power_comparision(self,raw1,raw2,label1,label2):
 
         if raw1.info["sfreq"] != raw2.info["sfreq"]:
             raise ValueError("Sampling rates do not match.")
-        
+
         print("raw1 id:", id(raw1))
         print("raw2 id:", id(raw2))
         print("raw1 is raw2:", raw1 is raw2)
